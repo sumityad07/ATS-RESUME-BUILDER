@@ -1,6 +1,21 @@
 # 📄 ResumeAI Pro - ATS-Friendly Resume Builder
 
-An AI-powered resume creation system that generates ATS-optimized resumes with intelligent scoring.
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://sumityad07-ats-resume-builder-app-9ghv9r.streamlit.app)
+
+> **🚀 [Try Live Demo](https://sumityad07-ats-resume-builder-app-9ghv9r.streamlit.app)** | **🎥 ** | **💻 [View Code](https://github.com/sumityad07/ats-resume-builder)**
+
+---
+
+**Built for:** Sophyra Platform - AI Intern Qualification Task  
+**Submitted by:** [Your Name]  
+**Date:** February 2026
+
+---
+
+## 🎯 Overview
+
+An AI-powered resume creation system that generates ATS-optimized resumes with intelligent scoring using Google's Gemini AI.
+
 
 ## 🎯 Features
 
