@@ -2,6 +2,7 @@ import google.generativeai as genai
 import os
 from dotenv import load_dotenv
 import re
+import time
 
 load_dotenv()
 
@@ -9,6 +10,9 @@ load_dotenv()
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
 if GOOGLE_API_KEY:
     genai.configure(api_key=GOOGLE_API_KEY)
+    print(f"✅ Gemini API configured with key: {GOOGLE_API_KEY[:10]}...")
+else:
+    print("⚠️ WARNING: No GOOGLE_API_KEY found!")
 
 
 def generate_resume_content(input_data):
@@ -18,239 +22,174 @@ def generate_resume_content(input_data):
     
     # Check if API key is set
     if not GOOGLE_API_KEY:
-        print("⚠️ Warning: Google API key not found. Using fallback...")
+        print("⚠️ No API key - using fallback")
         return format_basic_resume(input_data)
     
     # Create comprehensive prompt
     prompt = create_resume_prompt(input_data)
     
-    try:
-        # Try multiple models in order of preference
-        model_names = [
-            'gemini-2.5-flash',
-            'gemini-flash-latest',
-            'gemini-2.0-flash'
-        ]
-        
-        model = None
-        model_used = None
-        
-        for model_name in model_names:
-            try:
-                print(f"🔄 Trying model: {model_name}...")
-                model = genai.GenerativeModel(model_name)
-                model_used = model_name
-                print(f"✅ Successfully loaded model: {model_name}")
-                break
-            except Exception as e:
-                print(f"❌ Model {model_name} not available: {e}")
+    max_retries = 3
+    retry_count = 0
+    
+    while retry_count < max_retries:
+        try:
+            print(f"\n🔄 Attempt {retry_count + 1}/{max_retries}")
+            
+            # Initialize Gemini model
+            model = genai.GenerativeModel('gemini-2.0-flash-exp')  # Using stable model
+            
+            print(f"📤 Sending request to Gemini AI...")
+            print(f"📝 Prompt length: {len(prompt)} characters")
+            
+            # Generate content with configuration
+            generation_config = genai.types.GenerationConfig(
+                temperature=0.7,
+                top_p=0.95,
+                top_k=40,
+                max_output_tokens=2048,
+            )
+            
+            response = model.generate_content(
+                prompt,
+                generation_config=generation_config,
+                safety_settings={
+                    'HARM_CATEGORY_HATE_SPEECH': 'BLOCK_NONE',
+                    'HARM_CATEGORY_HARASSMENT': 'BLOCK_NONE',
+                    'HARM_CATEGORY_SEXUALLY_EXPLICIT': 'BLOCK_NONE',
+                    'HARM_CATEGORY_DANGEROUS_CONTENT': 'BLOCK_NONE',
+                }
+            )
+            
+            # Check if response exists and has text
+            if not response or not hasattr(response, 'text'):
+                print(f"⚠️ No response or no text attribute")
+                print(f"Response: {response}")
+                retry_count += 1
+                time.sleep(2)
                 continue
-        
-        if not model:
-            print("❌ No Gemini models available. Using fallback...")
-            return format_basic_resume(input_data)
-        
-        print(f"📤 Sending request to Gemini AI ({model_used})...")
-        
-        # Generate content with safety settings
-        generation_config = {
-            "temperature": 0.7,
-            "top_p": 0.95,
-            "top_k": 40,
-            "max_output_tokens": 2048,
-        }
-        
-        safety_settings = [
-            {
-                "category": "HARM_CATEGORY_HARASSMENT",
-                "threshold": "BLOCK_NONE"
-            },
-            {
-                "category": "HARM_CATEGORY_HATE_SPEECH",
-                "threshold": "BLOCK_NONE"
-            },
-            {
-                "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                "threshold": "BLOCK_NONE"
-            },
-            {
-                "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-                "threshold": "BLOCK_NONE"
-            },
-        ]
-        
-        response = model.generate_content(
-            prompt,
-            generation_config=generation_config,
-            safety_settings=safety_settings
-        )
-        
-        # Check if response was blocked
-        if not response or not response.text:
-            print("⚠️ Response was empty or blocked. Using fallback...")
-            return format_basic_resume(input_data)
-        
-        ai_content = response.text
-        
-        print("✅ AI Response received successfully!")
-        print(f"📊 Response length: {len(ai_content)} characters")
-        
-        # Parse AI response into structured format
-        resume_data = parse_ai_response(ai_content, input_data)
-        
-        return resume_data
-        
-    except Exception as e:
-        print(f"❌ Error generating resume with Gemini AI: {e}")
-        import traceback
-        traceback.print_exc()
-        # Fallback to basic formatting
-        return format_basic_resume(input_data)
+            
+            ai_content = response.text
+            
+            if not ai_content or len(ai_content) < 100:
+                print(f"⚠️ Response too short: {len(ai_content)} chars")
+                print(f"Content: {ai_content[:200]}")
+                retry_count += 1
+                time.sleep(2)
+                continue
+            
+            print(f"✅ AI Response received: {len(ai_content)} characters")
+            print(f"📄 First 200 chars: {ai_content[:200]}")
+            
+            # Parse AI response
+            resume_data = parse_ai_response(ai_content, input_data)
+            
+            # Validate parsed data
+            if not resume_data.get('summary') or len(resume_data.get('summary', '')) < 20:
+                print("⚠️ Parsed data seems incomplete, retrying...")
+                retry_count += 1
+                time.sleep(2)
+                continue
+            
+            print("✅ Resume data parsed successfully!")
+            return resume_data
+            
+        except Exception as e:
+            print(f"❌ Error on attempt {retry_count + 1}: {e}")
+            import traceback
+            traceback.print_exc()
+            retry_count += 1
+            time.sleep(2)
+    
+    # If all retries failed, use fallback
+    print("⚠️ All AI attempts failed, using enhanced fallback")
+    return format_basic_resume(input_data)
 
 
 def create_resume_prompt(data):
     """Create detailed prompt for Gemini AI"""
     
-    prompt = f"""You are an expert ATS (Applicant Tracking System) resume writer with 10+ years of experience. Create a professional, ATS-optimized resume that will pass automated screening systems.
+    prompt = f"""Act as an expert ATS resume writer. Create a highly professional, ATS-optimized resume.
 
-**CANDIDATE INFORMATION:**
+CANDIDATE DETAILS:
 Name: {data['full_name']}
 Email: {data['email']}
 Phone: {data['phone']}
 Target Role: {data['target_role']}
 
-**PROVIDED INFORMATION:**
-Education: {data.get('education') or 'Not provided - please create appropriate education for this role'}
-Experience: {data.get('experience') or 'Not provided - create relevant entry-level or internship experience'}
-Projects: {data.get('projects') or 'Not provided - create 2-3 relevant technical projects'}
-Skills: {data.get('skills') or 'Not provided - suggest comprehensive technical and soft skills'}
-Certifications: {data.get('certifications') or 'Not provided - suggest relevant certifications if appropriate'}
+EXPERIENCE PROVIDED:
+{data.get('experience', 'Create entry-level experience')}
+
+PROJECTS PROVIDED:
+{data.get('projects', 'Create 2 relevant projects')}
+
+EDUCATION PROVIDED:
+{data.get('education', 'Create appropriate education')}
+
+SKILLS PROVIDED:
+{data.get('skills', 'Suggest comprehensive skills')}
+
+CERTIFICATIONS PROVIDED:
+{data.get('certifications', 'None')}
 """
     
     if data.get('job_description'):
         prompt += f"""
-**TARGET JOB DESCRIPTION:**
-{data['job_description'][:1500]}
+JOB DESCRIPTION TO MATCH:
+{data['job_description'][:1000]}
 
-🎯 CRITICAL: Carefully analyze this job description and:
-1. Extract key technical skills, tools, and technologies mentioned
-2. Identify important keywords and phrases
-3. Match the experience level and requirements
-4. Incorporate these naturally throughout the resume
+CRITICAL: Extract keywords from this JD and use them throughout the resume.
 """
     
-    prompt += """
+    prompt += f"""
 
-**OUTPUT REQUIREMENTS:**
-
-Generate a complete ATS-optimized resume using EXACTLY these section headers:
+CREATE A COMPLETE RESUME WITH THESE EXACT SECTIONS:
 
 PROFESSIONAL SUMMARY:
-[Write a compelling 2-3 sentence professional summary that:
-- Highlights the candidate's key qualifications for the target role
-- Includes 1-2 years of experience level (or "aspiring" for entry-level)
-- Mentions 2-3 core technical competencies
-- Shows enthusiasm and career direction
-Example: "Results-driven Software Engineer with 2 years of experience in full-stack development. Proficient in React, Node.js, and Python with a proven track record of delivering scalable web applications. Passionate about clean code and user-centric design."]
+Write a compelling 3-sentence summary for a {data['target_role']}. Include specific skills and career goals. Make it impactful and professional.
 
 SKILLS:
-[List 12-15 relevant skills in this exact format, comma-separated:
-Technical Skills: [programming languages, frameworks, tools]
-Soft Skills: [communication, leadership, problem-solving, etc.]
-
-Example: Python, JavaScript, React, Node.js, SQL, MongoDB, Git, Docker, AWS, RESTful APIs, Agile/Scrum, Problem Solving, Team Collaboration, Communication, Time Management]
+List 12-15 technical and soft skills relevant to {data['target_role']}. Include programming languages, frameworks, tools, and soft skills. Format as comma-separated list.
 
 EXPERIENCE:
-[Create 1-2 professional experiences following this format:
-
-Job Title | Company Name
-Month Year - Month Year (or "Present")
-• [Achievement with quantifiable metric] - Start with action verb (Developed, Implemented, Led, Designed, Optimized)
-• [Technical contribution] - Mention specific technologies used
-• [Business impact] - Show how your work added value (improved performance, reduced costs, increased efficiency)
-• [Collaboration or leadership] - Demonstrate teamwork or initiative
-
-Example:
-Software Development Intern | Tech Solutions Inc.
-June 2023 - August 2023
-• Developed and deployed 5 new features for customer-facing web application using React and Node.js, improving user engagement by 25%
-• Implemented RESTful APIs serving 10,000+ daily requests with 99.9% uptime
-• Collaborated with cross-functional team of 8 members in Agile environment, participating in daily standups and sprint planning
-• Optimized database queries reducing page load time by 40%
-
-If no experience provided, create realistic internship or relevant project-based experience]
+Expand the provided experience into 2-3 professional roles with:
+- Job Title | Company Name
+- Duration (Month Year - Month Year)
+- 4-5 bullet points per role with action verbs (Developed, Implemented, Led, Designed)
+- Include metrics and numbers (increased by X%, reduced by Y, led team of Z)
+- Show technical skills used
+If no experience provided, create realistic internship/project-based roles.
 
 PROJECTS:
-[Create 2-3 impressive projects following this format:
-
-Project Name | Technologies Used
-• [Problem statement or goal of the project]
-• [Technical implementation - architecture, key features, algorithms used]
-• [Measurable results or impact - users, performance, functionality]
-• [Optional: GitHub link or live demo placeholder]
-
-Example:
-E-Commerce Platform | React, Node.js, MongoDB, Stripe API
-• Built full-stack online shopping platform with user authentication, product catalog, and secure payment integration
-• Implemented shopping cart functionality, order tracking, and admin dashboard with real-time analytics
-• Achieved 95% test coverage using Jest and React Testing Library
-• Deployed on AWS with CI/CD pipeline using GitHub Actions
-
-Task Management App | Python, Django, PostgreSQL, Docker
-• Developed collaborative task management system with real-time updates using WebSockets
-• Designed and implemented RESTful API with JWT authentication serving 15+ endpoints
-• Created responsive UI with drag-and-drop functionality for task organization
-• Containerized application using Docker for easy deployment]
+Expand the provided projects into 2-3 detailed projects with:
+- Project Name | Technologies Used
+- Problem solved and approach taken
+- Technical implementation details
+- Measurable results or impact
+Make them impressive and technical.
 
 EDUCATION:
-[Format education professionally:
-
-Degree Name (e.g., Bachelor of Technology in Computer Science)
-University/College Name
-Graduation Year or Expected Graduation: Month Year
-[Include GPA/Percentage only if above 7.5/10 or 75%]
-[Optional: Relevant coursework: Data Structures, Algorithms, Database Systems, Web Development]
-
-Example:
-Bachelor of Technology in Computer Science
-XYZ University
-Expected Graduation: May 2024
-CGPA: 8.5/10
-Relevant Coursework: Data Structures, Algorithms, Database Management, Machine Learning, Web Technologies]
+Format the education professionally:
+- Degree Name (Full form)
+- University/College Name
+- Graduation Year
+- GPA/CGPA if strong
+- Relevant coursework
 
 CERTIFICATIONS:
-[List certifications, courses, or achievements:
-• Certification Name - Issuing Organization (Year)
-• Online Course - Platform Name (Year)
-• Achievement or Award - Organization (Year)
+List certifications, online courses, or achievements:
+- Certification Name - Issuing Organization (Year)
+Make it professional.
 
-Example:
-• AWS Certified Cloud Practitioner - Amazon Web Services (2023)
-• Full Stack Web Development - Coursera (2023)
-• Winner, Smart India Hackathon - Government of India (2023)
-• Google Data Analytics Professional Certificate - Google (2023)]
+CRITICAL FORMATTING RULES:
+1. Use EXACTLY these section headers: PROFESSIONAL SUMMARY, SKILLS, EXPERIENCE, PROJECTS, EDUCATION, CERTIFICATIONS
+2. Make content detailed and professional
+3. Use numbers and metrics
+4. Include action verbs
+5. Make it ATS-friendly
+6. NO placeholders like "To be added" or "Not provided"
+7. Create complete, realistic content
 
-**CRITICAL ATS OPTIMIZATION RULES:**
-1. ✅ Use standard section headers (no creative names)
-2. ✅ Include action verbs: Developed, Implemented, Designed, Led, Optimized, Architected, Collaborated, Achieved
-3. ✅ Add metrics and numbers: percentages, timelines, team sizes, user counts
-4. ✅ Incorporate keywords naturally from job description
-5. ✅ Use industry-standard terminology and acronyms
-6. ✅ Keep formatting simple (no tables, columns, or graphics)
-7. ✅ Make content scannable with bullet points
-8. ✅ Ensure technical skills match job requirements
-9. ✅ Show impact and results, not just responsibilities
-10. ✅ Maintain consistent date formats and tenses
-
-**IMPORTANT:** 
-- Generate realistic, professional content
-- Make it specific to the {data['target_role']} role
-- Ensure all information is ATS-compliant
-- Use the EXACT section headers provided above
-- Be detailed and comprehensive
-
-Generate the complete resume now:
-"""
+OUTPUT THE COMPLETE RESUME NOW:"""
     
     return prompt
 
@@ -258,7 +197,7 @@ Generate the complete resume now:
 def parse_ai_response(ai_text, original_data):
     """Parse Gemini AI response into structured format"""
     
-    print("📝 Parsing AI response into structured sections...")
+    print("📝 Parsing AI response...")
     
     sections = {
         'name': original_data['full_name'],
@@ -273,201 +212,160 @@ def parse_ai_response(ai_text, original_data):
         'certifications': ''
     }
     
-    # Clean up markdown formatting from AI response
+    # Clean up formatting
     ai_text = ai_text.replace('**', '').replace('##', '').replace('#', '')
-    ai_text = re.sub(r'\*\s', '• ', ai_text)  # Convert * to bullets
+    ai_text = re.sub(r'\*\s', '• ', ai_text)
     
-    # Define regex patterns for each section
+    print(f"Cleaned text length: {len(ai_text)}")
+    
+    # More flexible extraction patterns
     patterns = {
-        'summary': r'PROFESSIONAL SUMMARY:?\s*\n+(.*?)(?=\n\s*SKILLS:|\n\s*TECHNICAL SKILLS:|$)',
-        'skills': r'(?:SKILLS|TECHNICAL SKILLS):?\s*\n+(.*?)(?=\n\s*EXPERIENCE:|$)',
-        'experience': r'EXPERIENCE:?\s*\n+(.*?)(?=\n\s*PROJECTS:|$)',
-        'projects': r'PROJECTS:?\s*\n+(.*?)(?=\n\s*EDUCATION:|$)',
-        'education': r'EDUCATION:?\s*\n+(.*?)(?=\n\s*CERTIFICATIONS:|$)',
+        'summary': r'PROFESSIONAL SUMMARY:?\s*\n+((?:(?!\n\s*(?:SKILLS|EXPERIENCE|PROJECTS|EDUCATION|CERTIFICATIONS):).)+)',
+        'skills': r'SKILLS:?\s*\n+((?:(?!\n\s*(?:EXPERIENCE|PROJECTS|EDUCATION|CERTIFICATIONS):).)+)',
+        'experience': r'EXPERIENCE:?\s*\n+((?:(?!\n\s*(?:PROJECTS|EDUCATION|CERTIFICATIONS):).)+)',
+        'projects': r'PROJECTS:?\s*\n+((?:(?!\n\s*(?:EDUCATION|CERTIFICATIONS):).)+)',
+        'education': r'EDUCATION:?\s*\n+((?:(?!\n\s*CERTIFICATIONS:).)+)',
         'certifications': r'CERTIFICATIONS:?\s*\n+(.*?)$'
     }
     
-    # Extract each section
     for key, pattern in patterns.items():
         match = re.search(pattern, ai_text, re.DOTALL | re.IGNORECASE)
         if match:
             content = match.group(1).strip()
-            # Clean up extra whitespace
             content = re.sub(r'\n\s*\n\s*\n+', '\n\n', content)
-            content = re.sub(r'[ \t]+', ' ', content)
             sections[key] = content
-            print(f"✅ Extracted {key}: {len(content)} characters")
+            print(f"✅ Extracted {key}: {len(content)} chars")
         else:
-            print(f"⚠️ Could not extract {key} from AI response")
+            print(f"⚠️ Could not extract {key}")
     
-    # Fallback: Use original data if AI extraction failed
-    for key in ['skills', 'experience', 'projects', 'education', 'certifications']:
-        if not sections[key] and original_data.get(key):
-            sections[key] = original_data[key]
-            print(f"↩️ Using original {key} data")
+    # Validate critical sections
+    critical_sections = ['summary', 'skills', 'experience']
+    for section in critical_sections:
+        if not sections[section] or len(sections[section]) < 20:
+            print(f"❌ Critical section '{section}' is too short or missing!")
+            print(f"Content: {sections[section][:100]}")
+            # Don't use fallback for individual sections, let the retry handle it
     
-    # Generate defaults for critical empty sections
-    if not sections['summary']:
-        sections['summary'] = generate_default_summary(original_data)
-        print("🔄 Generated default summary")
-    
-    if not sections['skills']:
-        sections['skills'] = generate_default_skills(original_data['target_role'])
-        print("🔄 Generated default skills")
-    
-    if not sections['experience']:
-        sections['experience'] = generate_default_experience(original_data['target_role'])
-        print("🔄 Generated default experience")
-    
-    if not sections['projects']:
-        sections['projects'] = generate_default_projects(original_data['target_role'])
-        print("🔄 Generated default projects")
-    
-    if not sections['education']:
-        sections['education'] = generate_default_education()
-        print("🔄 Generated default education")
-    
-    if not sections['certifications']:
-        sections['certifications'] = generate_default_certifications(original_data['target_role'])
-        print("🔄 Generated default certifications")
-    
-    print("✅ Resume parsing complete!")
     return sections
 
 
-def generate_default_summary(data):
-    """Generate a professional summary"""
-    role = data['target_role']
-    return f"Motivated {role} with strong technical aptitude and passion for innovation. Demonstrated ability to quickly learn new technologies and contribute to team success. Seeking opportunities to apply skills in {role.lower()} and drive impactful results through creative problem-solving and collaboration."
-
-
-def generate_default_skills(role):
-    """Generate role-appropriate default skills"""
-    role_lower = role.lower()
+def format_basic_resume(data):
+    """Enhanced fallback formatting"""
     
-    skill_sets = {
-        'software': "Python, JavaScript, Java, React, Node.js, HTML/CSS, SQL, Git, RESTful APIs, Agile Development, Problem Solving, Team Collaboration, Communication, Time Management",
-        'developer': "JavaScript, Python, React, Angular, Node.js, Express, MongoDB, SQL, Git, Docker, RESTful APIs, Responsive Design, Problem Solving, Debugging, Team Collaboration",
-        'engineer': "Python, Java, C++, Data Structures, Algorithms, System Design, Git, Linux, Testing, CI/CD, Problem Solving, Analytical Thinking, Communication, Team Collaboration",
-        'data': "Python, SQL, R, Pandas, NumPy, Scikit-learn, Tableau, Power BI, Statistics, Machine Learning, Data Visualization, Excel, Problem Solving, Analytical Thinking, Communication",
-        'analyst': "SQL, Python, Excel, Tableau, Power BI, Data Analysis, Statistical Analysis, Data Visualization, Critical Thinking, Problem Solving, Communication, Attention to Detail",
-        'design': "Figma, Adobe XD, Sketch, Photoshop, Illustrator, UI/UX Design, Prototyping, Wireframing, User Research, Visual Design, Creativity, Communication, Collaboration",
-        'product': "Product Strategy, Roadmap Planning, User Stories, Agile/Scrum, JIRA, Market Research, Data Analysis, Stakeholder Management, Communication, Leadership, Problem Solving",
-        'marketing': "Digital Marketing, SEO/SEM, Google Analytics, Social Media Marketing, Content Creation, Email Marketing, A/B Testing, Communication, Creativity, Data Analysis"
+    print("🔄 Using ENHANCED fallback resume formatting...")
+    
+    role = data['target_role']
+    
+    # Generate detailed summary
+    summary = f"Results-driven {role} with strong technical skills and proven ability to deliver high-quality solutions. Experienced in full software development lifecycle, from requirements gathering to deployment and maintenance. Passionate about leveraging cutting-edge technologies to solve complex problems and drive business value. Excellent communicator with demonstrated ability to collaborate effectively in team environments and adapt to rapidly changing requirements."
+    
+    # Generate comprehensive skills
+    skills_map = {
+        'software': "Python, JavaScript, Java, React, Node.js, Express, Django, Flask, HTML/CSS, SQL, PostgreSQL, MongoDB, Git, GitHub, Docker, REST APIs, Microservices, Agile/Scrum, Unit Testing, Problem Solving, Team Collaboration, Communication",
+        'developer': "JavaScript, TypeScript, Python, React, Angular, Vue.js, Node.js, Express, RESTful APIs, GraphQL, HTML5, CSS3, SASS, Webpack, Git, CI/CD, Jest, Responsive Design, Problem Solving, Debugging, Code Review",
+        'data': "Python, SQL, R, Pandas, NumPy, Scikit-learn, TensorFlow, PyTorch, Tableau, Power BI, Excel, Statistics, Machine Learning, Deep Learning, Data Visualization, ETL, A/B Testing, Critical Thinking, Communication",
+        'engineer': "Python, Java, C++, Data Structures, Algorithms, System Design, Object-Oriented Programming, Database Design, Git, Linux, Testing, Debugging, CI/CD, AWS, Problem Solving, Analytical Skills"
     }
     
-    # Find matching skill set
-    for key, skills in skill_sets.items():
-        if key in role_lower:
-            return skills
+    skills = skills_map.get('software', "Python, JavaScript, Problem Solving, Team Collaboration, Communication, Git, Agile Methodologies")
+    for key in skills_map:
+        if key in role.lower():
+            skills = skills_map[key]
+            break
     
-    # Default generic skills
-    return "Communication, Problem Solving, Team Collaboration, Critical Thinking, Time Management, Adaptability, Leadership, Attention to Detail, Project Management, Microsoft Office"
+    # Add user-provided skills
+    if data.get('skills'):
+        user_skills = [s.strip() for s in data['skills'].split(',') if s.strip()]
+        existing_skills = [s.strip() for s in skills.split(',')]
+        combined_skills = list(dict.fromkeys(user_skills + existing_skills))  # Remove duplicates
+        skills = ', '.join(combined_skills[:15])  # Limit to 15 skills
+    
+    # Generate detailed experience
+    if data.get('experience') and len(data['experience'].strip()) > 20:
+        experience = f"""{role} | {data.get('experience', 'Technology Company')}
+June 2023 - Present
+• Developed and deployed 10+ features for production applications serving 50,000+ users, improving user engagement by 35%
+• Implemented robust backend APIs using modern frameworks, achieving 99.9% uptime and sub-200ms response times
+• Collaborated with cross-functional team of 8 members in Agile environment, participating in daily standups, sprint planning, and retrospectives
+• Conducted comprehensive code reviews and mentored 2 junior developers, improving code quality and team productivity
+• Optimized database queries and application performance, reducing page load time by 45% and server costs by 20%
 
-
-def generate_default_experience(role):
-    """Generate role-appropriate default experience"""
-    return f"""{role} Intern | Tech Company
+Technical Intern | Previous Company
+January 2023 - May 2023
+• Contributed to development of customer-facing web application using modern JavaScript frameworks
+• Implemented 15+ unit tests achieving 90% code coverage and reducing bugs in production by 30%
+• Participated in agile ceremonies and collaborated with designers to implement pixel-perfect UI components
+• Gained hands-on experience with CI/CD pipelines, automated testing, and deployment workflows"""
+    else:
+        experience = f"""{role} Intern | Technology Solutions Inc.
 June 2023 - August 2023
-• Collaborated with cross-functional team of 6 members to develop and deploy new features for production applications
-• Contributed to codebase improvements resulting in 15% performance enhancement and better code maintainability
-• Participated in Agile ceremonies including daily standups, sprint planning, and retrospectives
-• Gained hands-on experience with industry-standard tools, best practices, and professional development workflows
+• Developed and deployed 5 new features for customer-facing web application using React and Node.js, improving user engagement by 25%
+• Implemented RESTful APIs serving 10,000+ daily requests with 99.9% uptime and sub-100ms response times
+• Collaborated with cross-functional team of 8 members in Agile environment, participating in daily standups and sprint planning
+• Conducted code reviews and wrote comprehensive unit tests, achieving 85% code coverage
+• Optimized database queries reducing page load time by 40% and improving overall application performance
 
-Student Technical Assistant | University Computer Lab
+Student Developer | University Computer Lab
 September 2022 - May 2023
-• Provided technical support and guidance to 200+ students on software tools and programming concepts
-• Troubleshot and resolved technical issues, improving lab efficiency by 20%
-• Conducted peer tutoring sessions on programming fundamentals and debugging techniques"""
-
-
-def generate_default_projects(role):
-    """Generate role-appropriate default projects"""
-    role_lower = role.lower()
+• Provided technical support and guidance to 200+ students on programming concepts and software development tools
+• Developed internal tools and scripts automating routine tasks, saving 10+ hours of manual work per week
+• Conducted peer tutoring sessions on data structures, algorithms, and best coding practices
+• Maintained and updated lab equipment and software, ensuring 99% uptime for student access"""
     
-    if 'software' in role_lower or 'developer' in role_lower or 'engineer' in role_lower:
-        return """E-Commerce Web Application | React, Node.js, MongoDB, Stripe
-• Built full-stack online shopping platform with user authentication, product catalog, and secure payment integration
-• Implemented shopping cart, order management, and admin dashboard with real-time inventory tracking
-• Achieved 95% test coverage using Jest and React Testing Library
-• Deployed on AWS EC2 with automated CI/CD pipeline using GitHub Actions
+    # Generate detailed projects
+    if data.get('projects') and len(data['projects'].strip()) > 20:
+        base_projects = data['projects']
+        projects = f"""{base_projects}
 
-Task Management System | Python, Django, PostgreSQL, Docker
-• Developed collaborative project management tool with real-time updates using WebSockets
-• Designed and implemented RESTful API with JWT authentication serving 20+ endpoints
-• Created responsive UI with drag-and-drop functionality for intuitive task organization
-• Containerized application using Docker for consistent deployment across environments"""
-    
-    elif 'data' in role_lower:
-        return """Customer Segmentation Analysis | Python, Pandas, Scikit-learn, Tableau
-• Analyzed 50,000+ customer records to identify distinct market segments using K-means clustering
-• Built predictive model achieving 87% accuracy in customer behavior classification
-• Created interactive Tableau dashboard for business stakeholders to explore insights
-• Recommendations led to 15% improvement in targeted marketing campaign effectiveness
-
-Sales Forecasting Model | Python, Time Series Analysis, Prophet
-• Developed time series forecasting model to predict monthly sales with 92% accuracy
-• Processed and cleaned 3 years of historical sales data across multiple product categories
-• Implemented automated data pipeline for daily model updates and predictions
-• Presented findings to management team with actionable business insights"""
-    
+Task Management Application | Python, Django, PostgreSQL, Docker
+• Developed collaborative task management system with real-time updates using WebSockets and modern web technologies
+• Designed and implemented RESTful API with JWT authentication serving 15+ endpoints with comprehensive documentation
+• Created responsive UI with drag-and-drop functionality for intuitive task organization and project management
+• Implemented automated testing suite with 90% code coverage and containerized application using Docker for easy deployment
+• Achieved 500+ downloads and 4.5-star rating on GitHub with active community contributions"""
     else:
-        return f"""Personal Portfolio Website | HTML, CSS, JavaScript
-• Designed and developed professional portfolio showcasing projects and technical skills
-• Implemented responsive design ensuring optimal viewing across devices and screen sizes
-• Integrated contact form with email functionality and added smooth animations
-• Deployed using GitHub Pages with custom domain
+        projects = f"""E-Commerce Platform | React, Node.js, MongoDB, Stripe API, AWS
+• Built full-stack online shopping platform with user authentication, product catalog, shopping cart, and secure payment integration
+• Implemented advanced search and filtering functionality, recommendation engine, and order tracking system
+• Achieved 95% test coverage using Jest and React Testing Library with automated CI/CD pipeline
+• Deployed on AWS with load balancing and auto-scaling, handling 1000+ concurrent users
+• Integrated third-party APIs for payment processing, email notifications, and analytics tracking
 
-Capstone Project: {role} Application
-• Led team of 4 in developing comprehensive solution addressing real-world problem
-• Applied Agile methodology with 2-week sprints and regular stakeholder presentations
-• Conducted user testing with 25+ participants and incorporated feedback iteratively
-• Presented final product to faculty panel and received distinction grade"""
-
-
-def generate_default_education():
-    """Generate default education section"""
-    return """Bachelor of Technology in Computer Science
-University Name
+Task Management Application | Python, Django, PostgreSQL, Docker, Redis
+• Developed collaborative project management tool with real-time updates using WebSockets and caching for performance
+• Designed RESTful API with JWT authentication, role-based access control, and comprehensive API documentation
+• Created responsive UI with drag-and-drop functionality, Gantt charts, and deadline notifications
+• Containerized application using Docker, implemented CI/CD with GitHub Actions, achieving 90% test coverage
+• Deployed on cloud platform with automated backups and monitoring, serving 500+ active users"""
+    
+    # Generate education
+    if data.get('education') and len(data['education'].strip()) > 20:
+        education = data['education']
+    else:
+        education = """Bachelor of Technology in Computer Science
+XYZ University
 Expected Graduation: May 2024
-CGPA: 8.2/10
-Relevant Coursework: Data Structures and Algorithms, Database Management Systems, Web Technologies, Software Engineering, Operating Systems"""
-
-
-def generate_default_certifications(role):
-    """Generate role-appropriate certifications"""
-    role_lower = role.lower()
+CGPA: 8.5/10
+Relevant Coursework: Data Structures and Algorithms, Database Management Systems, Web Technologies, Software Engineering, Operating Systems, Computer Networks, Machine Learning"""
     
-    if 'software' in role_lower or 'developer' in role_lower:
-        return """• Full Stack Web Development - freeCodeCamp (2023)
-• JavaScript Algorithms and Data Structures - Coursera (2023)
-• Git and GitHub Essentials - LinkedIn Learning (2023)"""
-    
-    elif 'data' in role_lower:
-        return """• Google Data Analytics Professional Certificate - Google (2023)
-• Python for Data Science - IBM Coursera (2023)
-• SQL for Data Analysis - Udacity (2023)"""
-    
+    # Generate certifications
+    if data.get('certifications') and len(data['certifications'].strip()) > 10:
+        certifications = data['certifications']
     else:
-        return """• Relevant Professional Development Courses - Online Platforms (2023)
-• Technical Skill Certifications - Industry-Recognized Programs
-• Continuing Education in Field of Specialization"""
-
-
-def format_basic_resume(data):
-    """Fallback basic formatting if AI completely fails"""
-    
-    print("🔄 Using complete fallback resume formatting...")
+        certifications = """• AWS Certified Cloud Practitioner - Amazon Web Services (2023)
+• Full Stack Web Development Certification - Coursera (2023)
+• Google Data Analytics Professional Certificate - Google (2023)
+• JavaScript Algorithms and Data Structures - freeCodeCamp (2023)"""
     
     return {
         'name': data['full_name'],
         'email': data['email'],
         'phone': data['phone'],
         'target_role': data['target_role'],
-        'summary': generate_default_summary(data),
-        'skills': data.get('skills') or generate_default_skills(data['target_role']),
-        'experience': data.get('experience') or generate_default_experience(data['target_role']),
-        'projects': data.get('projects') or generate_default_projects(data['target_role']),
-        'education': data.get('education') or generate_default_education(),
-        'certifications': data.get('certifications') or generate_default_certifications(data['target_role'])
+        'summary': summary,
+        'skills': skills,
+        'experience': experience,
+        'projects': projects,
+        'education': education,
+        'certifications': certifications
     }
